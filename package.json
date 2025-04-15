@@ -1,0 +1,18 @@
+{
+  "name": "pallet-collator-staking-migration",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "scripts": {
+    "test": "jest"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@polkadot/api": "^15.8.1",
+    "@polkadot/util-crypto": "^13.4.3"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}
