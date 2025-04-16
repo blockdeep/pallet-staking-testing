@@ -30,6 +30,9 @@ describe('Staking Tests', () => {
         const era = await api.query.staking.currentEra();
         return era.unwrap().toNumber();
     };
+    const backOfUnbondingQueueEra = async () => {
+        return (await api.query.staking.unbondingQueueParams()).unwrap().toJSON().backOfUnbondingQueueEra;
+    };
     const keyring = new Keyring({type: 'sr25519'});
     let alice;
     let bob;
@@ -58,14 +61,28 @@ describe('Staking Tests', () => {
         await api.disconnect();
     }, 10000);
 
-    test('Maximum bonding duration should be 28 days', async () => {
+    test('Initial conditions', async () => {
+        const eraLowestRatioTotalStake = (await api.query.staking.eraLowestRatioTotalStake()).toJSON();
+        expect(eraLowestRatioTotalStake.length).toBe(1);
+        let [totalStake] = eraLowestRatioTotalStake;
+        expect(parseBalance(totalStake)).toBeGreaterThan(0n);
+
+        const unbondingQueueParams = (await api.query.staking.unbondingQueueParams()).unwrap().toJSON();
+        expect(unbondingQueueParams).toEqual({
+            minSlashableShare: 500000000,
+            lowestRatio: 340000000,
+            unbondPeriodLowerBound: MIN_UNBONDING_ERAS,
+            backOfUnbondingQueueEra: 0,
+        });
+
         const bondingDuration = (await api.consts.staking.bondingDuration).toNumber();
         expect(bondingDuration).toBe(MAX_UNBONDING_ERAS);
     });
 
     test('Unbond small amount should yield 2 eras', async () => {
-        const unBondTx = api.tx.staking.unbond(SMALL_AMOUNT);
-        await waitForInclusion(unBondTx, bob);
+        expect(await backOfUnbondingQueueEra()).toBe(0);
+        const unbondTx = api.tx.staking.unbond(SMALL_AMOUNT);
+        await waitForInclusion(unbondTx, bob);
 
         const bobLedger = await api.query.staking.ledger(bob.address);
         const queue = bobLedger.unwrap().unlocking.toJSON();
@@ -75,11 +92,14 @@ describe('Staking Tests', () => {
         const era = await currentEra();
         expect(parseBalance(bobUnbonding.value)).toBe(SMALL_AMOUNT);
         expect(bobUnbonding.era).toBe(era + MIN_UNBONDING_ERAS);
+
+        // delta = 0, so the back remains the same
+        expect(await backOfUnbondingQueueEra()).toBe(0);
     });
 
     test('Unbond big amount should yield 28 eras', async () => {
         let bobLedger = await api.query.staking.ledger(bob.address);
-        const total = bobLedger.unwrap().active.toBigInt() - SMALL_AMOUNT;
+        const total = bobLedger.unwrap().active.toBigInt() - SMALL_AMOUNT * 2n;
         const unBondTx = api.tx.staking.unbond(total);
         await waitForInclusion(unBondTx, bob);
 
@@ -92,12 +112,12 @@ describe('Staking Tests', () => {
         const lastValue = parseBalance(last.value);
         expect(lastValue).toBe(total);
         expect(last.era).toBe(era + MAX_UNBONDING_ERAS);
+        expect(await backOfUnbondingQueueEra()).toBe(era + MAX_UNBONDING_ERAS);
     });
 
-    test('Unbond small amount should yield 28 eras with unbonding queue full', async () => {
+    test('Unbond small amount should yield 28 eras with unbonding queue full in the previous queue slot', async () => {
         let bobLedger = await api.query.staking.ledger(bob.address);
         const lastAmount = parseBalance(bobLedger.unwrap().unlocking.toJSON()[1].value);
-
 
         const unBondTx = api.tx.staking.unbond(SMALL_AMOUNT);
         await waitForInclusion(unBondTx, bob);
@@ -114,7 +134,14 @@ describe('Staking Tests', () => {
         expect(last.era).toBe(era + MAX_UNBONDING_ERAS);
     });
 
+    // This MUST be the last test!
     test('Set staking config should work', async () => {
+        const newConfig = {
+            minSlashableShare: 800000000,
+            lowestRatio: 500000000,
+            unbondPeriodLowerBound: 1000,
+            backOfUnbondingQueueEra: 55,
+        };
         const tx = api.tx.sudo.sudo(api.tx.staking.setStakingConfigs(
             {Noop: null},
             {Noop: null},
@@ -123,15 +150,11 @@ describe('Staking Tests', () => {
             {Noop: null},
             {Noop: null},
             {Noop: null},
-            {
-                Set: {
-                    minSlashableShare: 500000000,
-                    lowestRatio: 340000000,
-                    unbondPeriodLowerBound: MIN_UNBONDING_ERAS,
-                    backOfUnbondingQueueEra: 0,
-                }
-            },
+            {Set: newConfig},
         ));
         await waitForInclusion(tx, alice);
+
+        const unbondingQueueParams = (await api.query.staking.unbondingQueueParams()).unwrap().toJSON();
+        expect(unbondingQueueParams).toEqual(newConfig);
     });
 });
