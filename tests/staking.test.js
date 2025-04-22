@@ -154,7 +154,7 @@ describe('Staking Tests', () => {
     test('Unbond big amount should yield 28 eras', async () => {
         let bobLedger = await api.query.staking.ledger(bob.address);
         const total = bobLedger.unwrap().active.toBigInt() - SMALL_AMOUNT * 2n;
-        const unBondTx = api.tx.staking.unbond(total); // 99,999,700
+        const unBondTx = api.tx.staking.unbond(total);
         await waitForInclusion(unBondTx, bob);
 
         bobLedger = await api.query.staking.ledger(bob.address);
