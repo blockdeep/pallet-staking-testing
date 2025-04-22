@@ -79,6 +79,22 @@ describe('Staking Tests', () => {
         expect(bondingDuration).toBe(MAX_UNBONDING_ERAS);
     });
 
+     test("Zero‑stake unbond request should not create unlocking entry", async () => {
+        const before = (await api.query.staking.ledger(bob.address))
+          .unwrap()
+          .unlocking.toJSON();
+        expect(before.length).toBe(0);
+
+        await waitForInclusion(api.tx.staking.unbond(0n), bob);
+
+        const after = (await api.query.staking.ledger(bob.address))
+          .unwrap()
+          .unlocking.toJSON();
+        expect(after.length).toBe(0);
+
+        expect(await backOfUnbondingQueueEra()).toBe(0);
+      });
+
     test('Unbond small amount should yield 2 eras', async () => {
         expect(await backOfUnbondingQueueEra()).toBe(0);
         const unbondTx = api.tx.staking.unbond(SMALL_AMOUNT);
@@ -96,6 +112,44 @@ describe('Staking Tests', () => {
         // delta = 0, so the back remains the same
         expect(await backOfUnbondingQueueEra()).toBe(0);
     });
+
+    test("Multiple small unbonds merging into one entry", async () => {
+        const era = await currentEra();
+        await waitForInclusion(api.tx.staking.unbond(SMALL_AMOUNT), bob);
+
+        const ledger = await api.query.staking.ledger(bob.address);
+        const queue = ledger.unwrap().unlocking.toJSON();
+        expect(queue.length).toBe(1);
+
+        // Value should be doubled since two SMALL_AMOUNT unbonds merged
+        expect(parseBalance(queue[0].value)).toBe(SMALL_AMOUNT * 2n);
+        expect(queue[0].era).toBe(era + MIN_UNBONDING_ERAS);
+
+        expect(await backOfUnbondingQueueEra()).toBe(0);
+      });
+
+      test("Rebonding before unbond completes clears unlocking and allows re‑unbond", async () => {
+          // Cancel the two SMALL_AMOUNT unbonds
+          await waitForInclusion(api.tx.staking.rebond(SMALL_AMOUNT * 2n), bob);
+
+          // Now the unlocking queue should be empty
+          let ledger = await api.query.staking.ledger(bob.address);
+          let queue = ledger.unwrap().unlocking.toJSON();
+          expect(queue.length).toBe(0);
+          expect(await backOfUnbondingQueueEra()).toBe(0);
+
+          // Re‑create a fresh SMALL_AMOUNT unbond for next big‑unbond test
+          const era = await currentEra();
+          await waitForInclusion(api.tx.staking.unbond(SMALL_AMOUNT), bob);
+
+          ledger = await api.query.staking.ledger(bob.address);
+          queue = ledger.unwrap().unlocking.toJSON();
+          expect(queue.length).toBe(1);
+          expect(parseBalance(queue[0].value)).toBe(SMALL_AMOUNT);
+          expect(queue[0].era).toBe(era + MIN_UNBONDING_ERAS);
+
+          expect(await backOfUnbondingQueueEra()).toBe(0);
+        });
 
     test('Unbond big amount should yield 28 eras', async () => {
         let bobLedger = await api.query.staking.ledger(bob.address);
