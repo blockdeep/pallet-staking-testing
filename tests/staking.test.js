@@ -50,12 +50,12 @@ describe('Staking Tests', () => {
         // Bond 3000 units from Alice. 1000 For the first three validators.
         const bobBondTx = api.tx.staking.bond(BIG_AMOUNT, 'Stash');
         await waitForInclusion(bobBondTx, bob);
-    });
+    }, 60_000);
 
     afterAll(async () => {
         await provider.disconnect();
         await api.disconnect();
-    }, 10000);
+    }, 60_000);
 
     test('Initial conditions', async () => {
         const eraLowestRatioTotalStake = (await api.query.staking.eraLowestRatioTotalStake()).toJSON();
