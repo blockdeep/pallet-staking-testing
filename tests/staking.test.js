@@ -1,10 +1,11 @@
 const {cryptoWaitReady} = require("@polkadot/util-crypto");
 const {ApiPromise, Keyring, WsProvider} = require("@polkadot/api");
 
-const UNIT = BigInt(10 ** 14);
-const MAX_UNBONDING_ERAS = 28;
-const MIN_UNBONDING_ERAS = 2;
+const UNIT = BigInt(10 ** 12);
+const MAX_UNBONDING_ERAS = 2;
+const MIN_UNBONDING_ERAS = 0;
 const SMALL_AMOUNT = UNIT;
+const BIG_AMOUNT = 100_000n * UNIT;
 
 const waitForInclusion = (tx, sender, opts = {}, finalize = false) => {
     return new Promise(async (resolve) => {
@@ -43,17 +44,12 @@ describe('Staking Tests', () => {
         await cryptoWaitReady();
         alice = keyring.addFromUri('//Alice');
         bob = keyring.addFromUri('//Bob');
-        provider = new WsProvider('ws://127.0.0.1:9944');
+        provider = new WsProvider('ws://127.0.0.1:9966');
         api = await ApiPromise.create({provider});
 
         // Bond 3000 units from Alice. 1000 For the first three validators.
-        const bobBondTx = api.tx.staking.bond(1_000_000n * UNIT, 'Stash');
+        const bobBondTx = api.tx.staking.bond(BIG_AMOUNT, 'Stash');
         await waitForInclusion(bobBondTx, bob);
-
-        // Nominate the three first validators
-        const validators = ['//Alice//stash'].map(k => keyring.addFromUri(k).address);
-        const nominateTx = api.tx.staking.nominate(validators);
-        await waitForInclusion(nominateTx, alice);
     });
 
     afterAll(async () => {
@@ -190,6 +186,9 @@ describe('Staking Tests', () => {
 
     // This MUST be the last test!
     test('Set staking config should work', async () => {
+        if (!api.tx.sudo) {
+            return;
+        }
         const newConfig = {
             minSlashableShare: 800000000,
             lowestRatio: 500000000,
