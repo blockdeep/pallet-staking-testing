@@ -197,9 +197,6 @@ describe('Staking Tests', () => {
 
   // This MUST be the last test!
   test('Set staking config should work', async () => {
-    if (!api.tx.sudo) {
-      return
-    }
     const newConfig = {
       minSlashableShare: 800000000,
       lowestRatio: 500000000,
