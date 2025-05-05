@@ -26,10 +26,11 @@ tell application "iTerm2"
   end tell
 
   tell session2
-    write text "cd /tmp && sleep 90 && npx @acala-network/chopsticks@latest -e ws://127.0.0.1:9966"
+    write text "cd /tmp"
+    write text "npx @acala-network/chopsticks@latest -e ws://127.0.0.1:9966" without newline
   end tell
 
   tell session3
-    write text "sleep 90 && RUST_LOG=\"polkadot-staking-miner= trace,info\" polkadot-staking-miner --uri ws://127.0.0.1:9966 experimental-monitor-multi-block --seed-or-path //Bob"
+    write text "sleep 90 && RUST_LOG=\"polkadot-staking-miner=trace,info\" polkadot-staking-miner --uri ws://127.0.0.1:9966 experimental-monitor-multi-block --seed-or-path //Bob"
   end tell
 end tell
