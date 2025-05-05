@@ -7,22 +7,6 @@ const MIN_UNBONDING_ERAS = 0
 const SMALL_AMOUNT = UNIT
 const BIG_AMOUNT = 1_000_000_000_000n * UNIT
 
-const waitForInclusion = (tx, sender, opts = {}, finalize = false) => {
-  return new Promise(async resolve => {
-    await new Promise(r => setTimeout(r, 1000))
-    const unsub = await tx.signAndSend(sender, opts, ({ status, txHash }) => {
-      if ((status.isInBlock && !finalize) || status.isFinalized) {
-        unsub()
-        resolve(txHash.toString())
-      } else if (status.isDropped || status.isInvalid || status.isFinalityTimeout) {
-        unsub()
-        console.error(`Transaction ${txHash.toString()} failed:`, status.toString())
-        resolve(txHash.toString())
-      }
-    })
-  })
-}
-
 const parseBalance = balance => {
   return BigInt(typeof balance === 'string' ? (balance.startsWith('0x') ? BigInt(balance) : balance) : balance)
 }
@@ -35,6 +19,38 @@ describe('Staking Tests', () => {
   const backOfUnbondingQueueEra = async () => {
     return (await api.query.staking.unbondingQueueParams()).unwrap().toJSON().backOfUnbondingQueueEra
   }
+  const waitForInclusion = (tx, sender, opts = {}, finalize = false) => {
+    return new Promise(async (resolve, reject) => {
+      await new Promise(r => setTimeout(r, 1000))
+      const unsub = await tx.signAndSend(sender, opts, async ({ status, txHash }) => {
+        if ((status.isInBlock && !finalize) || status.isFinalized) {
+          unsub()
+          const blockHash = status.isInBlock ? status.asInBlock : status.asFinalized
+          const block = await api.rpc.chain.getBlock(blockHash)
+          const events = await api.query.system.events.at(blockHash)
+          const extrinsicIndex = block.block.extrinsics.findIndex(ext => ext.hash.eq(txHash))
+          const extrinsicEvents = events.filter(
+            ({ phase }) => phase.isApplyExtrinsic && phase.asApplyExtrinsic.eq(extrinsicIndex)
+          )
+          const success = extrinsicEvents.some(({ event }) => api.events.system.ExtrinsicSuccess.is(event))
+          if (!success) {
+            console.error(
+              `Transaction ${txHash.toString()} was included in a block, but did not succeed:`,
+              status.toString()
+            )
+            reject({ hash: txHash.toString(), events: extrinsicEvents })
+          } else {
+            resolve({ hash: txHash.toString(), events: extrinsicEvents })
+          }
+        } else if (status.isDropped || status.isInvalid || status.isFinalityTimeout) {
+          unsub()
+          console.error(`Transaction ${txHash.toString()} was not included in a block:`, status.toString())
+          resolve({ hash: txHash.toString(), events: [] })
+        }
+      })
+    })
+  }
+
   const keyring = new Keyring({ type: 'sr25519' })
   let alice
   let bob
@@ -88,7 +104,7 @@ describe('Staking Tests', () => {
     // Nominate Charlie as a validator.
     const validators = ['//Charlie//stash'].map(k => keyring.addFromUri(k).address)
     const nominateTx = api.tx.staking.nominate(validators)
-    await waitForInclusion(nominateTx, charlie)
+    await waitForInclusion(nominateTx, bob)
   })
 
   test('Zero‑stake unbond request should not create unlocking entry', async () => {
@@ -193,6 +209,35 @@ describe('Staking Tests', () => {
     const lastValue = parseBalance(last.value)
     expect(lastValue).toBe(lastAmount + SMALL_AMOUNT)
     expect(last.era).toBe(era + MAX_UNBONDING_ERAS)
+  })
+
+  test('Should be able to bond extra amount', async () => {
+    const beforeLedger = await api.query.staking.ledger(bob.address)
+    const beforeActive = beforeLedger.unwrap().active.toBigInt()
+
+    const bondExtraTx = api.tx.staking.bondExtra(SMALL_AMOUNT)
+    await waitForInclusion(bondExtraTx, bob)
+
+    const afterLedger = await api.query.staking.ledger(bob.address)
+    const afterActive = afterLedger.unwrap().active.toBigInt()
+    expect(afterActive).toBe(beforeActive + SMALL_AMOUNT)
+  })
+
+  test('Should be able to chill', async () => {
+    const chillTx = api.tx.staking.chill()
+    await waitForInclusion(chillTx, bob)
+
+    const nominations = await api.query.staking.nominators(bob.address)
+    expect(nominations.isNone).toBe(true)
+  })
+
+  test('Should not be able to unbond more than bonded amount', async () => {
+    const ledger = await api.query.staking.ledger(bob.address)
+    const currentBonded = ledger.unwrap().active.toBigInt()
+    const unbondTx = api.tx.staking.unbond(currentBonded + UNIT)
+    const { events } = await waitForInclusion(unbondTx, bob)
+    const unbondEvent = events.find(({ event }) => api.events.staking.Unbonded.is(event))
+    expect(unbondEvent.event.data[1].toBigInt()).toBe(currentBonded)
   })
 
   // This MUST be the last test!
