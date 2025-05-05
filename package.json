@@ -4,7 +4,7 @@
   "type": "commonjs",
   "scripts": {
     "test": "jest",
-    "setup": "./start.sh",
+    "setup": "bin/setup.scpt",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
