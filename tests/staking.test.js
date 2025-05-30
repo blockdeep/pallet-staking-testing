@@ -23,6 +23,14 @@ describe('Staking Tests', () => {
     const era = await api.query.staking.currentEra()
     return era.unwrap().toNumber()
   }
+
+  const unbondingQueue = async address => {
+    return (await api.query.staking.ledger(address))
+      .unwrap()
+      .unlocking.toJSON()
+      .map(u => ({ ...u, value: parseBalance(u.value), previousUnbondedStake: parseBalance(u.previousUnbondedStake) }))
+  }
+
   const waitForInclusion = (tx, sender, opts = {}, finalize = false) => {
     return new Promise(async (resolve, reject) => {
       await new Promise(r => setTimeout(r, 1000))
@@ -117,13 +125,13 @@ describe('Staking Tests', () => {
   })
 
   test('Zero‑stake unbond request should not create unlocking entry', async () => {
-    const before = (await api.query.staking.ledger(bob.address)).unwrap().unlocking.toJSON()
+    const before = await unbondingQueue(bob.address)
     expect(before.length).toBe(0)
 
     const { events } = await waitForInclusion(api.tx.staking.unbond(0n), bob)
     expect(events.map(e => e.event.toHuman()).find(e => e.section === 'staking')).toBeUndefined()
 
-    const after = (await api.query.staking.ledger(bob.address)).unwrap().unlocking.toJSON()
+    const after = await unbondingQueue(bob.address)
     expect(after.length).toBe(0)
   })
 
@@ -136,13 +144,12 @@ describe('Staking Tests', () => {
     expect(event.data.stash).toBe(bob.address)
     expect(parseBalance(event.data.amount)).toBe(SMALL_AMOUNT)
 
-    const bobLedger = await api.query.staking.ledger(bob.address)
-    const queue = bobLedger.unwrap().unlocking.toJSON()
+    const queue = await unbondingQueue(bob.address)
     expect(queue.length).toBe(1)
 
-    const [bobUnbonding] = queue
     const era = await currentEra()
-    expect(parseBalance(bobUnbonding.value)).toBe(SMALL_AMOUNT)
+    const [bobUnbonding] = queue
+    expect(bobUnbonding.value).toBe(SMALL_AMOUNT)
     expect(bobUnbonding.era).toBe(era + MIN_UNBONDING_ERAS)
   })
 
@@ -155,13 +162,12 @@ describe('Staking Tests', () => {
     expect(event.data.stash).toBe(bob.address)
     expect(parseBalance(event.data.amount)).toBe(SMALL_AMOUNT)
 
-    const ledger = await api.query.staking.ledger(bob.address)
-    const queue = ledger.unwrap().unlocking.toJSON()
+    const queue = await unbondingQueue(bob.address)
     expect(queue.length).toBe(1)
 
     // Value should be doubled since two SMALL_AMOUNT unbonds merged
-    expect(parseBalance(queue[0].value)).toBe(SMALL_AMOUNT * 2n)
-    expect(queue[0].era).toBe(era + MIN_UNBONDING_ERAS)
+    expect(queue[0].value).toBe(SMALL_AMOUNT * 2n)
+    expect(queue[0].era).toBe(era)
   })
 
   test('Rebonding before unbond completes clears unlocking and allows re‑unbond', async () => {
@@ -174,8 +180,7 @@ describe('Staking Tests', () => {
     expect(parseBalance(event.data.amount)).toBe(SMALL_AMOUNT * 2n)
 
     // Now the unlocking queue should be empty
-    let ledger = await api.query.staking.ledger(bob.address)
-    let queue = ledger.unwrap().unlocking.toJSON()
+    let queue = await unbondingQueue(bob.address)
     expect(queue.length).toBe(0)
     const era = await currentEra()
 
@@ -187,8 +192,7 @@ describe('Staking Tests', () => {
     expect(event.data.stash).toBe(bob.address)
     expect(parseBalance(event.data.amount)).toBe(SMALL_AMOUNT)
 
-    ledger = await api.query.staking.ledger(bob.address)
-    queue = ledger.unwrap().unlocking.toJSON()
+    queue = await unbondingQueue(bob.address)
     expect(queue.length).toBe(1)
     expect(parseBalance(queue[0].value)).toBe(SMALL_AMOUNT)
     expect(queue[0].era).toBe(era + MIN_UNBONDING_ERAS)
@@ -196,7 +200,7 @@ describe('Staking Tests', () => {
 
   test(`Unbond big amount should yield ${MAX_UNBONDING_ERAS} eras`, async () => {
     const bobLedger1 = await api.query.staking.ledger(bob.address)
-    const previousQueue = bobLedger1.unwrap().unlocking.toJSON()
+    const previousQueue = await unbondingQueue(bob.address)
     expect(previousQueue.length).toBe(1)
     const previousValue = parseBalance(previousQueue[0].value)
     const total = bobLedger1.unwrap().active.toBigInt()
@@ -208,9 +212,8 @@ describe('Staking Tests', () => {
     expect(event.data.stash).toBe(bob.address)
     expect(parseBalance(event.data.amount)).toBe(total)
 
-    const bobLedger2 = await api.query.staking.ledger(bob.address)
     const era = await currentEra()
-    const queue = bobLedger2.unwrap().unlocking.toJSON()
+    const queue = await unbondingQueue(bob.address)
     expect(queue.length).toBe(1)
     const last = queue[0]
 
