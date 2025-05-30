@@ -8,7 +8,14 @@ const SMALL_AMOUNT = UNIT
 const BIG_AMOUNT = 1_000_000_000_000n * UNIT
 
 const parseBalance = balance => {
-  return BigInt(typeof balance === 'string' ? (balance.startsWith('0x') ? BigInt(balance) : balance) : balance)
+  if (typeof balance === 'string') {
+    if (balance.startsWith('0x')) {
+      return BigInt(balance)
+    } else {
+      return BigInt(balance.replaceAll(',', ''))
+    }
+  }
+  return BigInt(balance)
 }
 
 describe('Staking Tests', () => {
@@ -71,9 +78,10 @@ describe('Staking Tests', () => {
 
   test('Initial conditions', async () => {
     const eraLowestRatioTotalStake = await api.query.staking.eraLowestRatioTotalStake.entries()
-    expect(eraLowestRatioTotalStake.length).toBeGreaterThanOrEqual(1)
-    const [totalStake] = eraLowestRatioTotalStake
-    expect(parseBalance(totalStake[1])).toBeGreaterThan(0n)
+    const length = eraLowestRatioTotalStake.length
+    expect(length).toBeGreaterThanOrEqual(1)
+    const totalStake = eraLowestRatioTotalStake[length - 1]
+    expect(parseBalance(totalStake[1].unwrap().toBigInt())).toBeGreaterThan(0n)
 
     const unbondingQueueParams = (await api.query.staking.unbondingQueueParams()).unwrap().toJSON()
     expect(unbondingQueueParams).toEqual({
@@ -93,21 +101,27 @@ describe('Staking Tests', () => {
 
   test('Should be able to bond', async () => {
     const bobBondTx = api.tx.staking.bond(BIG_AMOUNT, 'Stash')
-    await waitForInclusion(bobBondTx, bob)
+    const { events } = await waitForInclusion(bobBondTx, bob)
+    const event = events.map(e => e.event.toHuman()).find(e => e.section === 'staking' && e.method === 'Bonded')
+    expect(event).not.toBeUndefined()
+    expect(event.data.stash).toBe(bob.address)
+    expect(parseBalance(event.data.amount)).toBe(BIG_AMOUNT)
   })
 
   test('Should be able to nominate', async () => {
     // Nominate Charlie as a validator.
     const validators = ['//Charlie//stash'].map(k => keyring.addFromUri(k).address)
     const nominateTx = api.tx.staking.nominate(validators)
-    await waitForInclusion(nominateTx, bob)
+    const { events } = await waitForInclusion(nominateTx, bob)
+    expect(events.map(e => e.event.toHuman()).find(e => e.section === 'staking')).toBeUndefined()
   })
 
   test('Zero‑stake unbond request should not create unlocking entry', async () => {
     const before = (await api.query.staking.ledger(bob.address)).unwrap().unlocking.toJSON()
     expect(before.length).toBe(0)
 
-    await waitForInclusion(api.tx.staking.unbond(0n), bob)
+    const { events } = await waitForInclusion(api.tx.staking.unbond(0n), bob)
+    expect(events.map(e => e.event.toHuman()).find(e => e.section === 'staking')).toBeUndefined()
 
     const after = (await api.query.staking.ledger(bob.address)).unwrap().unlocking.toJSON()
     expect(after.length).toBe(0)
@@ -115,7 +129,12 @@ describe('Staking Tests', () => {
 
   test(`Unbonding a small amount should yield ${MIN_UNBONDING_ERAS} eras`, async () => {
     const unbondTx = api.tx.staking.unbond(SMALL_AMOUNT)
-    await waitForInclusion(unbondTx, bob)
+    const { events } = await waitForInclusion(unbondTx, bob)
+
+    const event = events.map(e => e.event.toHuman()).find(e => e.section === 'staking' && e.method === 'Unbonded')
+    expect(event).not.toBeUndefined()
+    expect(event.data.stash).toBe(bob.address)
+    expect(parseBalance(event.data.amount)).toBe(SMALL_AMOUNT)
 
     const bobLedger = await api.query.staking.ledger(bob.address)
     const queue = bobLedger.unwrap().unlocking.toJSON()
@@ -129,7 +148,12 @@ describe('Staking Tests', () => {
 
   test('Multiple small unbonds merging into one entry', async () => {
     const era = await currentEra()
-    await waitForInclusion(api.tx.staking.unbond(SMALL_AMOUNT), bob)
+    const { events } = await waitForInclusion(api.tx.staking.unbond(SMALL_AMOUNT), bob)
+
+    const event = events.map(e => e.event.toHuman()).find(e => e.section === 'staking' && e.method === 'Unbonded')
+    expect(event).not.toBeUndefined()
+    expect(event.data.stash).toBe(bob.address)
+    expect(parseBalance(event.data.amount)).toBe(SMALL_AMOUNT)
 
     const ledger = await api.query.staking.ledger(bob.address)
     const queue = ledger.unwrap().unlocking.toJSON()
@@ -142,7 +166,12 @@ describe('Staking Tests', () => {
 
   test('Rebonding before unbond completes clears unlocking and allows re‑unbond', async () => {
     // Cancel the two SMALL_AMOUNT unbonds
-    await waitForInclusion(api.tx.staking.rebond(SMALL_AMOUNT * 2n), bob)
+    let { events } = await waitForInclusion(api.tx.staking.rebond(SMALL_AMOUNT * 2n), bob)
+
+    let event = events.map(e => e.event.toHuman()).find(e => e.section === 'staking' && e.method === 'Bonded')
+    expect(event).not.toBeUndefined()
+    expect(event.data.stash).toBe(bob.address)
+    expect(parseBalance(event.data.amount)).toBe(SMALL_AMOUNT * 2n)
 
     // Now the unlocking queue should be empty
     let ledger = await api.query.staking.ledger(bob.address)
@@ -150,8 +179,13 @@ describe('Staking Tests', () => {
     expect(queue.length).toBe(0)
     const era = await currentEra()
 
-    // Re‑create a fresh SMALL_AMOUNT unbond for next big‑unbond test
-    await waitForInclusion(api.tx.staking.unbond(SMALL_AMOUNT), bob)
+    // Re‑create a fresh SMALL_AMOUNT unbond for the next big unbond test
+    events = (await waitForInclusion(api.tx.staking.unbond(SMALL_AMOUNT), bob)).events
+
+    event = events.map(e => e.event.toHuman()).find(e => e.section === 'staking' && e.method === 'Unbonded')
+    expect(event).not.toBeUndefined()
+    expect(event.data.stash).toBe(bob.address)
+    expect(parseBalance(event.data.amount)).toBe(SMALL_AMOUNT)
 
     ledger = await api.query.staking.ledger(bob.address)
     queue = ledger.unwrap().unlocking.toJSON()
@@ -167,7 +201,12 @@ describe('Staking Tests', () => {
     const previousValue = parseBalance(previousQueue[0].value)
     const total = bobLedger1.unwrap().active.toBigInt()
     const unBondTx = api.tx.staking.unbond(total)
-    await waitForInclusion(unBondTx, bob)
+    const { events } = await waitForInclusion(unBondTx, bob)
+
+    const event = events.map(e => e.event.toHuman()).find(e => e.section === 'staking' && e.method === 'Unbonded')
+    expect(event).not.toBeUndefined()
+    expect(event.data.stash).toBe(bob.address)
+    expect(parseBalance(event.data.amount)).toBe(total)
 
     const bobLedger2 = await api.query.staking.ledger(bob.address)
     const era = await currentEra()
@@ -185,7 +224,12 @@ describe('Staking Tests', () => {
     const beforeActive = beforeLedger.unwrap().active.toBigInt()
 
     const bondExtraTx = api.tx.staking.bondExtra(SMALL_AMOUNT)
-    await waitForInclusion(bondExtraTx, bob)
+    const { events } = await waitForInclusion(bondExtraTx, bob)
+
+    const event = events.map(e => e.event.toHuman()).find(e => e.section === 'staking' && e.method === 'Bonded')
+    expect(event).not.toBeUndefined()
+    expect(event.data.stash).toBe(bob.address)
+    expect(parseBalance(event.data.amount)).toBe(SMALL_AMOUNT)
 
     const afterLedger = await api.query.staking.ledger(bob.address)
     const afterActive = afterLedger.unwrap().active.toBigInt()
@@ -194,7 +238,11 @@ describe('Staking Tests', () => {
 
   test('Should be able to chill', async () => {
     const chillTx = api.tx.staking.chill()
-    await waitForInclusion(chillTx, bob)
+    const { events } = await waitForInclusion(chillTx, bob)
+
+    const event = events.map(e => e.event.toHuman()).find(e => e.section === 'staking' && e.method === 'Chilled')
+    expect(event).not.toBeUndefined()
+    expect(event.data.stash).toBe(bob.address)
 
     const nominations = await api.query.staking.nominators(bob.address)
     expect(nominations.isNone).toBe(true)
