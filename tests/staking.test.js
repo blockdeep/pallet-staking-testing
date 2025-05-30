@@ -31,6 +31,13 @@ describe('Staking Tests', () => {
       .map(u => ({ ...u, value: parseBalance(u.value), previousUnbondedStake: parseBalance(u.previousUnbondedStake) }))
   }
 
+  const expectedRelease = async address => {
+    return (await api.call.stakingApi.unbondingDuration(address)).toJSON().map(duration => {
+      duration[1] = parseBalance(duration[1])
+      return duration
+    })
+  }
+
   const waitForInclusion = (tx, sender, opts = {}, finalize = false) => {
     return new Promise(async (resolve, reject) => {
       await new Promise(r => setTimeout(r, 1000))
@@ -151,6 +158,8 @@ describe('Staking Tests', () => {
     const [bobUnbonding] = queue
     expect(bobUnbonding.value).toBe(SMALL_AMOUNT)
     expect(bobUnbonding.era).toBe(era + MIN_UNBONDING_ERAS)
+
+    expect(await expectedRelease(bob.address)).toEqual([[era + MIN_UNBONDING_ERAS, SMALL_AMOUNT]])
   })
 
   test('Multiple small unbonds merging into one entry', async () => {
@@ -220,6 +229,8 @@ describe('Staking Tests', () => {
     const lastValue = parseBalance(last.value)
     expect(lastValue).toBe(total + previousValue)
     expect(last.era).toBe(era)
+
+    expect(await expectedRelease(bob.address)).toEqual([[era + MAX_UNBONDING_ERAS, total + previousValue]])
   })
 
   test('Should be able to bond extra amount', async () => {
