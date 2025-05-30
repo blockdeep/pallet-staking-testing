@@ -38,6 +38,14 @@ describe('Staking Tests', () => {
     })
   }
 
+  const setLowestStake = async () => {
+    const era = await currentEra()
+    const storageKey = api.query.staking.eraLowestRatioTotalStake.key(era)
+    const newValue = api.createType('Option<u128>', BIG_AMOUNT)
+    const setStorageTx = api.tx.sudo.sudo(api.tx.system.setStorage([[storageKey, newValue.toHex()]]))
+    await waitForInclusion(setStorageTx, alice)
+  }
+
   const waitForInclusion = (tx, sender, opts = {}, finalize = false) => {
     return new Promise(async (resolve, reject) => {
       await new Promise(r => setTimeout(r, 1000))
@@ -143,6 +151,8 @@ describe('Staking Tests', () => {
   })
 
   test(`Unbonding a small amount should yield ${MIN_UNBONDING_ERAS} eras`, async () => {
+    await setLowestStake()
+
     const unbondTx = api.tx.staking.unbond(SMALL_AMOUNT)
     const { events } = await waitForInclusion(unbondTx, bob)
 
@@ -157,7 +167,7 @@ describe('Staking Tests', () => {
     const era = await currentEra()
     const [bobUnbonding] = queue
     expect(bobUnbonding.value).toBe(SMALL_AMOUNT)
-    expect(bobUnbonding.era).toBe(era + MIN_UNBONDING_ERAS)
+    expect(bobUnbonding.era).toBe(era)
 
     expect(await expectedRelease(bob.address)).toEqual([[era + MIN_UNBONDING_ERAS, SMALL_AMOUNT]])
   })
@@ -177,6 +187,33 @@ describe('Staking Tests', () => {
     // Value should be doubled since two SMALL_AMOUNT unbonds merged
     expect(queue[0].value).toBe(SMALL_AMOUNT * 2n)
     expect(queue[0].era).toBe(era)
+  })
+
+  test(`Rebonding a big amount should increase the expected unbonding era to ${MAX_UNBONDING_ERAS}}`, async () => {
+    await setLowestStake()
+    const era = await currentEra()
+
+    const initialQueue = await unbondingQueue(bob.address)
+    expect(initialQueue.length).toBe(1)
+    const initialValue = initialQueue[0].value
+    expect(await expectedRelease(bob.address)).toEqual([[era + MIN_UNBONDING_ERAS, initialValue]])
+
+    // After this operation funds should be locked for a longer period of time
+    const unbondAmount = (BIG_AMOUNT * 9n) / 10n
+    await waitForInclusion(api.tx.staking.unbond(unbondAmount), bob)
+    let queue = await unbondingQueue(bob.address)
+    expect(queue.length).toBe(1)
+    expect(queue[0].value).toBe(initialValue + unbondAmount)
+    expect(queue[0].era).toBe(era)
+    expect(await expectedRelease(bob.address)).toEqual([[era + MAX_UNBONDING_ERAS, initialValue + unbondAmount]])
+
+    // This reverts the previous operation
+    await waitForInclusion(api.tx.staking.rebond(unbondAmount), bob)
+    queue = await unbondingQueue(bob.address)
+    expect(queue.length).toBe(1)
+    expect(parseBalance(queue[0].value)).toBe(initialValue)
+    expect(queue[0].era).toBe(era)
+    expect(await expectedRelease(bob.address)).toEqual([[era + MIN_UNBONDING_ERAS, initialValue]])
   })
 
   test('Rebonding before unbond completes clears unlocking and allows re‑unbond', async () => {
@@ -204,7 +241,7 @@ describe('Staking Tests', () => {
     queue = await unbondingQueue(bob.address)
     expect(queue.length).toBe(1)
     expect(parseBalance(queue[0].value)).toBe(SMALL_AMOUNT)
-    expect(queue[0].era).toBe(era + MIN_UNBONDING_ERAS)
+    expect(queue[0].era).toBe(era)
   })
 
   test(`Unbond big amount should yield ${MAX_UNBONDING_ERAS} eras`, async () => {
