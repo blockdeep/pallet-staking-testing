@@ -16,9 +16,6 @@ describe('Staking Tests', () => {
     const era = await api.query.staking.currentEra()
     return era.unwrap().toNumber()
   }
-  const backOfUnbondingQueueEra = async () => {
-    return (await api.query.staking.unbondingQueueParams()).unwrap().toJSON().backOfUnbondingQueueEra
-  }
   const waitForInclusion = (tx, sender, opts = {}, finalize = false) => {
     return new Promise(async (resolve, reject) => {
       await new Promise(r => setTimeout(r, 1000))
@@ -73,17 +70,16 @@ describe('Staking Tests', () => {
   }, 60_000)
 
   test('Initial conditions', async () => {
-    const eraLowestRatioTotalStake = (await api.query.staking.eraLowestRatioTotalStake()).toJSON()
+    const eraLowestRatioTotalStake = await api.query.staking.eraLowestRatioTotalStake.entries()
     expect(eraLowestRatioTotalStake.length).toBeGreaterThanOrEqual(1)
     const [totalStake] = eraLowestRatioTotalStake
-    expect(parseBalance(totalStake)).toBeGreaterThan(0n)
+    expect(parseBalance(totalStake[1])).toBeGreaterThan(0n)
 
     const unbondingQueueParams = (await api.query.staking.unbondingQueueParams()).unwrap().toJSON()
     expect(unbondingQueueParams).toEqual({
       minSlashableShare: 500000000,
       lowestRatio: 340000000,
       unbondPeriodLowerBound: MIN_UNBONDING_ERAS,
-      backOfUnbondingQueueEra: 0,
     })
 
     const bondingDuration = (await api.consts.staking.bondingDuration).toNumber()
@@ -115,12 +111,9 @@ describe('Staking Tests', () => {
 
     const after = (await api.query.staking.ledger(bob.address)).unwrap().unlocking.toJSON()
     expect(after.length).toBe(0)
-
-    expect(await backOfUnbondingQueueEra()).toBe(0)
   })
 
   test(`Unbonding a small amount should yield ${MIN_UNBONDING_ERAS} eras`, async () => {
-    expect(await backOfUnbondingQueueEra()).toBe(0)
     const unbondTx = api.tx.staking.unbond(SMALL_AMOUNT)
     await waitForInclusion(unbondTx, bob)
 
@@ -132,9 +125,6 @@ describe('Staking Tests', () => {
     const era = await currentEra()
     expect(parseBalance(bobUnbonding.value)).toBe(SMALL_AMOUNT)
     expect(bobUnbonding.era).toBe(era + MIN_UNBONDING_ERAS)
-
-    // delta = 0, so the back remains the same
-    expect(await backOfUnbondingQueueEra()).toBe(era)
   })
 
   test('Multiple small unbonds merging into one entry', async () => {
@@ -148,7 +138,6 @@ describe('Staking Tests', () => {
     // Value should be doubled since two SMALL_AMOUNT unbonds merged
     expect(parseBalance(queue[0].value)).toBe(SMALL_AMOUNT * 2n)
     expect(queue[0].era).toBe(era + MIN_UNBONDING_ERAS)
-    expect(await backOfUnbondingQueueEra()).toBe(era)
   })
 
   test('Rebonding before unbond completes clears unlocking and allows re‑unbond', async () => {
@@ -160,7 +149,6 @@ describe('Staking Tests', () => {
     let queue = ledger.unwrap().unlocking.toJSON()
     expect(queue.length).toBe(0)
     const era = await currentEra()
-    expect(await backOfUnbondingQueueEra()).toBe(era)
 
     // Re‑create a fresh SMALL_AMOUNT unbond for next big‑unbond test
     await waitForInclusion(api.tx.staking.unbond(SMALL_AMOUNT), bob)
@@ -170,45 +158,26 @@ describe('Staking Tests', () => {
     expect(queue.length).toBe(1)
     expect(parseBalance(queue[0].value)).toBe(SMALL_AMOUNT)
     expect(queue[0].era).toBe(era + MIN_UNBONDING_ERAS)
-
-    expect(await backOfUnbondingQueueEra()).toBe(era)
   })
 
   test(`Unbond big amount should yield ${MAX_UNBONDING_ERAS} eras`, async () => {
     const bobLedger1 = await api.query.staking.ledger(bob.address)
-    const total = bobLedger1.unwrap().active.toBigInt() - SMALL_AMOUNT * 2n
+    const previousQueue = bobLedger1.unwrap().unlocking.toJSON()
+    expect(previousQueue.length).toBe(1)
+    const previousValue = parseBalance(previousQueue[0].value)
+    const total = bobLedger1.unwrap().active.toBigInt()
     const unBondTx = api.tx.staking.unbond(total)
     await waitForInclusion(unBondTx, bob)
 
     const bobLedger2 = await api.query.staking.ledger(bob.address)
     const era = await currentEra()
     const queue = bobLedger2.unwrap().unlocking.toJSON()
-    expect(queue.length).toBe(2)
-    const last = queue[1]
+    expect(queue.length).toBe(1)
+    const last = queue[0]
 
     const lastValue = parseBalance(last.value)
-    expect(lastValue).toBe(total)
-    expect(last.era).toBe(era + MAX_UNBONDING_ERAS)
-    expect(await backOfUnbondingQueueEra()).toBe(era + MAX_UNBONDING_ERAS)
-  })
-
-  test(`Unbond small amount should yield ${MAX_UNBONDING_ERAS} eras with unbonding queue full in the previous queue slot`, async () => {
-    let bobLedger = await api.query.staking.ledger(bob.address)
-    const lastAmount = parseBalance(bobLedger.unwrap().unlocking.toJSON()[1].value)
-
-    const unBondTx = api.tx.staking.unbond(SMALL_AMOUNT)
-    await waitForInclusion(unBondTx, bob)
-
-    // Now this new small amount gets added up to the last unbond operation in the queue
-    bobLedger = await api.query.staking.ledger(bob.address)
-    const queue = bobLedger.unwrap().unlocking.toJSON()
-    expect(queue.length).toBe(2)
-    const last = queue[1]
-    const era = await currentEra()
-
-    const lastValue = parseBalance(last.value)
-    expect(lastValue).toBe(lastAmount + SMALL_AMOUNT)
-    expect(last.era).toBe(era + MAX_UNBONDING_ERAS)
+    expect(lastValue).toBe(total + previousValue)
+    expect(last.era).toBe(era)
   })
 
   test('Should be able to bond extra amount', async () => {
@@ -246,7 +215,6 @@ describe('Staking Tests', () => {
       minSlashableShare: 800000000,
       lowestRatio: 500000000,
       unbondPeriodLowerBound: 1000,
-      backOfUnbondingQueueEra: 55,
     }
     const tx = api.tx.sudo.sudo(
       api.tx.staking.setStakingConfigs(
