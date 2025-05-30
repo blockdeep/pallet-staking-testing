@@ -9,9 +9,7 @@ const BIG_AMOUNT = 1_000_000_000_000n * UNIT
 
 const parseBalance = balance => {
   if (typeof balance === 'string') {
-    if (balance.startsWith('0x')) {
-      return BigInt(balance)
-    } else {
+    if (!balance.startsWith('0x')) {
       return BigInt(balance.replaceAll(',', ''))
     }
   }
