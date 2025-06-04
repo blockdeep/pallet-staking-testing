@@ -97,6 +97,10 @@ describe('Staking Tests', () => {
     await api.disconnect()
   }, 60_000)
 
+  // Verifies initial staking conditions:
+  // - Era lowest ratio total stake should exist and be greater than 0.
+  // - Unbonding queue parameters should match expected values. This is a requirement before running other tests.
+  // - Bonding duration should match MAX_UNBONDING_ERAS.
   test('Initial conditions', async () => {
     const eraLowestRatioTotalStake = await api.query.staking.eraLowestRatioTotalStake.entries()
     const length = eraLowestRatioTotalStake.length
@@ -115,11 +119,15 @@ describe('Staking Tests', () => {
     expect(bondingDuration).toBe(MAX_UNBONDING_ERAS)
   })
 
+  // Sets Bob's balance to a large amount using sudo.
+  // This is required to place enough stake for the rest of the tests.
   test('Force set balance', async () => {
     const setBalanceTx = api.tx.sudo.sudo(api.tx.balances.forceSetBalance(bob.address, BIG_AMOUNT * 2n))
     await waitForInclusion(setBalanceTx, alice)
   })
 
+  // Tests bonding functionality by having Bob bond BIG_AMOUNT of tokens.
+  // Verifies the Bonded event is emitted with correct parameters.
   test('Should be able to bond', async () => {
     const bobBondTx = api.tx.staking.bond(BIG_AMOUNT, 'Stash')
     const { events } = await waitForInclusion(bobBondTx, bob)
@@ -129,6 +137,7 @@ describe('Staking Tests', () => {
     expect(parseBalance(event.data.amount)).toBe(BIG_AMOUNT)
   })
 
+  // Tests nomination functionality by having Bob nominate Charlie as validator.
   test('Should be able to nominate', async () => {
     // Nominate Charlie as a validator.
     const validators = ['//Charlie//stash'].map(k => keyring.addFromUri(k).address)
@@ -137,6 +146,9 @@ describe('Staking Tests', () => {
     expect(events.map(e => e.event.toHuman()).find(e => e.section === 'staking')).toBeUndefined()
   })
 
+  // Verifies that attempting to unbond zero tokens doesn't create an unlocking entry
+  // in the unbonding queue.
+  // It also verifies no bonding events are emitted, since this is a no-op.
   test('Zero‑stake unbond request should not create unlocking entry', async () => {
     const before = await unbondingQueue(bob.address)
     expect(before.length).toBe(0)
@@ -148,6 +160,11 @@ describe('Staking Tests', () => {
     expect(after.length).toBe(0)
   })
 
+  // Tests unbonding of small amount of tokens:
+  // - Sets lowest stake to ensure consistent behavior.
+  // - Verifies unbonding event and queue entry.
+  // - Confirms unbonding period is MIN_UNBONDING_ERAS, as the amount is very small when compared to the total
+  //   stake in the system.
   test(`Unbonding a small amount should yield ${MIN_UNBONDING_ERAS} eras`, async () => {
     await setLowestStake()
 
@@ -170,6 +187,10 @@ describe('Staking Tests', () => {
     expect(await expectedRelease(bob.address)).toEqual([[era + MIN_UNBONDING_ERAS, SMALL_AMOUNT]])
   })
 
+  // Tests that multiple small unbonding requests are merged into a single queue entry
+  // with combined value.
+  // It is counting with the previous test where already SMALL_AMOUNT was unbonded so that this test checks after
+  // unbonding the same amount twice the total sum gets accumulated in a single unlock chunk if done in the same era.
   test('Multiple small unbonds merging into one entry', async () => {
     const era = await currentEra()
     const { events } = await waitForInclusion(api.tx.staking.unbond(SMALL_AMOUNT), bob)
@@ -182,11 +203,15 @@ describe('Staking Tests', () => {
     const queue = await unbondingQueue(bob.address)
     expect(queue.length).toBe(1)
 
-    // Value should be doubled since two SMALL_AMOUNT unbonds merged
+    // Value should be doubled since two SMALL_AMOUNT unbonds merged.
     expect(queue[0].value).toBe(SMALL_AMOUNT * 2n)
     expect(queue[0].era).toBe(era)
   })
 
+  // Tests rebonding behavior with large amounts:
+  // - Verifies unbonding period increases to MAX_UNBONDING_ERAS for large amounts, as we are draining a huge percentage
+  //   of the total stake, and that must have a penalty in terms of unbonding time.
+  // - Confirms rebonding restores original state.
   test(`Rebonding a big amount should increase the expected unbonding era to ${MAX_UNBONDING_ERAS}}`, async () => {
     await setLowestStake()
     const era = await currentEra()
@@ -214,6 +239,9 @@ describe('Staking Tests', () => {
     expect(await expectedRelease(bob.address)).toEqual([[era + MIN_UNBONDING_ERAS, initialValue]])
   })
 
+  // Tests rebonding behavior when done before unbonding completes:
+  // - Verifies that rebonding clears the unlocking queue
+  // - Confirms ability to create new unbonding requests after rebonding
   test('Rebonding before unbond completes clears unlocking and allows re‑unbond', async () => {
     // Cancel the two SMALL_AMOUNT unbonds
     let { events } = await waitForInclusion(api.tx.staking.rebond(SMALL_AMOUNT * 2n), bob)
@@ -242,6 +270,9 @@ describe('Staking Tests', () => {
     expect(queue[0].era).toBe(era)
   })
 
+  // Tests unbonding of large amount of stake:
+  // - Verifies unbonding event and queue entry.
+  // - Confirms unbonding period is the maximum.
   test(`Unbond big amount should yield ${MAX_UNBONDING_ERAS} eras`, async () => {
     const bobLedger1 = await api.query.staking.ledger(bob.address)
     const previousQueue = await unbondingQueue(bob.address)
@@ -268,6 +299,9 @@ describe('Staking Tests', () => {
     expect(await expectedRelease(bob.address)).toEqual([[era + MAX_UNBONDING_ERAS, total + previousValue]])
   })
 
+  // Tests bonding additional tokens to an existing bond:
+  // - Verifies Bonded event emission.
+  // - Confirms active stake increases by bonded amount.
   test('Should be able to bond extra amount', async () => {
     const beforeLedger = await api.query.staking.ledger(bob.address)
     const beforeActive = beforeLedger.unwrap().active.toBigInt()
@@ -285,6 +319,9 @@ describe('Staking Tests', () => {
     expect(afterActive).toBe(beforeActive + SMALL_AMOUNT)
   })
 
+  // Tests chill functionality which stops the account from nominating:
+  // - Verifies Chilled event emission.
+  // - Confirms nominations are cleared.
   test('Should be able to chill', async () => {
     const chillTx = api.tx.staking.chill()
     const { events } = await waitForInclusion(chillTx, bob)
@@ -297,6 +334,7 @@ describe('Staking Tests', () => {
     expect(nominations.isNone).toBe(true)
   })
 
+  // Tests that unbonding more than the bonded amount is limited to the actual bonded amount.
   test('Should not be able to unbond more than bonded amount', async () => {
     const ledger = await api.query.staking.ledger(bob.address)
     const currentBonded = ledger.unwrap().active.toBigInt()
@@ -306,7 +344,9 @@ describe('Staking Tests', () => {
     expect(unbondEvent.event.data[1].toBigInt()).toBe(currentBonded)
   })
 
-  // This MUST be the last test!
+  // Tests setting new staking configuration parameters:
+  // - Updates minSlashableShare, lowestRatio, and unbondPeriodLowerBound.
+  // - Verifies new configuration is applied.
   test('Set staking config should work', async () => {
     const newConfig = {
       minSlashableShare: 800000000,
