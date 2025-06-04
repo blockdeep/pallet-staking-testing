@@ -12,24 +12,48 @@ Note: The staking miner requires a new era to be reached before executing certai
 
 ## Instructions
 
-1. Install the dependencies:
+1. Make sure you get a copy of `polkadot-sdk` and this one:
+```bash
+$ git clone https://github.com/blockdeep/pallet-staking-integration-tests
+$ git clone https://github.com/paritytech/polkadot-sdk.git --depth 1 --branch RFC-0097-port
+```
+
+2. Install the dependencies:
    ```bash
+   cd pallet-staking-integration-tests
    yarn install
    ```
 
-2. Install the staking miner:
+3. Install the staking miner:
    ```bash
    cargo +nightly install --git https://github.com/paritytech/polkadot-staking-miner polkadot-staking-miner
    ```
 
-3. Run the following command to start zombienet:
+4. Bootstrap the network:
+
+#### MacOS:
+This will require [iTerm](https://iterm2.com) to be installed. Run the following command to start zombienet:
    ```bash
    yarn run setup
    ```
-   
-4. The previous command will open a three-tab window, where the right-most one is the command that **is meant to be executed once a new era is reached after a few minutes**.
+The previous command will open a three-tab window, where the right-most one is the command that **is meant to be manually executed once a new era is reached after a few minutes**.
 
-5. Run the tests:
+#### Linux:
+
+Open three terminals and run the following:
+```bash
+# Terminal 1: Start zombienet
+$ cd ../polkadot-sdk/substrate/frame/staking-async/runtimes/parachain && ./build-and-run-zn.sh
+
+# Terminal 2: Fork the network with chopsticks once at least one era passes on the parachain.
+# You will likely have to wait several minutes for that.
+$ cd /tmp && npx @acala-network/chopsticks@latest -e ws://127.0.0.1:9966
+
+# Terminal 3. Wait until the parachain on zombienet (terminal 1) starts producing blocks and then execute it.
+$ RUST_LOG="polkadot-staking-miner=trace,info" polkadot-staking-miner --uri ws://127.0.0.1:9966 experimental-monitor-multi-block --seed-or-path //Bob
+```
+
+5. Run the tests in a separate terminal:
    ```bash
    yarn test
    ```
